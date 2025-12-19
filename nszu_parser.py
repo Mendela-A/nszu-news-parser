@@ -27,20 +27,44 @@ class NSZUParser:
         self.db_file = db_file
         self.sent_news = self.load_sent_news()
         
-        # Налаштування Chrome
+        # Налаштування Chrome/Chromium
         chrome_options = Options()
         if headless:
-            chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--headless=new')
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+        chrome_options.add_argument('--disable-gpu')
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
-        # Ініціалізація драйвера
-        self.driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=chrome_options
-        )
+        # Спроба використання системного chromedriver
+        try:
+            # Спочатку пробуємо системний chromedriver
+            import shutil
+            chromedriver_path = shutil.which('chromedriver')
+            
+            if chromedriver_path:
+                print(f"Використовується системний chromedriver: {chromedriver_path}")
+                self.driver = webdriver.Chrome(
+                    service=Service(chromedriver_path),
+                    options=chrome_options
+                )
+            else:
+                # Якщо системного немає, завантажуємо через webdriver-manager
+                print("Завантаження chromedriver через webdriver-manager...")
+                self.driver = webdriver.Chrome(
+                    service=Service(ChromeDriverManager().install()),
+                    options=chrome_options
+                )
+        except Exception as e:
+            print(f"Помилка ініціалізації Chrome: {e}")
+            print("Спроба використання Chromium...")
+            # Останній варіант - прямий шлях до chromium
+            chrome_options.binary_location = '/usr/bin/chromium'
+            self.driver = webdriver.Chrome(
+                options=chrome_options
+            )
+        
         self.wait = WebDriverWait(self.driver, 10)
     
     def load_sent_news(self):
