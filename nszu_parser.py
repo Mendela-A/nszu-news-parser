@@ -13,22 +13,6 @@ import hashlib
 from datetime import datetime
 import os
 
-
-try:
-    from config import (
-        TELEGRAM_TOKEN,
-        TELEGRAM_CHAT_ID,
-        HEADLESS_MODE,
-        MAX_NEWS_ITEMS,
-        NEWS_LIMIT_TO_SEND,
-        DATABASE_FILE,
-        CLEANUP_OLD_RECORDS_DAYS
-    )
-except ImportError:
-    print("❌ Файл config.py не знайдено!")
-    print("📝 Скопіюйте config.example.py в config.py і заповніть дані")
-    exit(1)
-
 class NSZUParser:
     def __init__(self, headless=True, telegram_token=None, telegram_chat_id=None, db_file='sent_news.json'):
         """Ініціалізація парсера з Selenium"""
@@ -95,8 +79,7 @@ class NSZUParser:
         self.sent_news[news_hash] = {
             'title': news_item.get('title', ''),
             'url': news_item.get('url', ''),
-            'sent_at': datetime.now().isoformat(),
-            'date': news_item.get('date', '')
+            'sent_at': datetime.now().isoformat()
         }
         self.save_sent_news()
     
@@ -131,6 +114,7 @@ class NSZUParser:
     def parse_news_items(self, soup, max_items):
         """Парсинг новин зі сторінки"""
         news_items = []
+        seen_urls = set()  # Для відстеження унікальних URL
         
         # Можливі селектори для новин
         selectors = [
@@ -157,10 +141,16 @@ class NSZUParser:
             for link in links[:max_items]:
                 href = link.get('href', '')
                 if '/e-data/' in href or '/document/' in href or '/news/' in href:
+                    full_url = self.base_url + href if href.startswith('/') else href
+                    
+                    # Перевірка на дублікат
+                    if full_url in seen_urls:
+                        continue
+                    seen_urls.add(full_url)
+                    
                     news_items.append({
                         'title': link.get_text(strip=True),
-                        'url': self.base_url + href if href.startswith('/') else href,
-                        'date': 'Не вказано',
+                        'url': full_url,
                         'description': ''
                     })
         else:
@@ -180,22 +170,28 @@ class NSZUParser:
                         link = title_elem if title_elem.name == 'a' else title_elem.find('a')
                         if link and link.get('href'):
                             href = link['href']
-                            item['url'] = self.base_url + href if href.startswith('/') else href
+                            full_url = self.base_url + href if href.startswith('/') else href
+                            
+                            # Перевірка на дублікат
+                            if full_url in seen_urls:
+                                continue
+                            seen_urls.add(full_url)
+                            
+                            item['url'] = full_url
                     
-                    # Дата
-                    date_elem = (article.find('time') or 
-                                article.find(class_=['date', 'published', 'post-date']) or
-                                article.find('span', class_=lambda x: x and 'date' in x.lower()))
-                    
-                    item['date'] = date_elem.get_text(strip=True) if date_elem else 'Не вказано'
-                    
-                    # Опис
+                    # Опис (без дати)
                     desc_elem = (article.find('p') or 
                                 article.find(class_=['description', 'excerpt', 'summary']))
                     
-                    item['description'] = desc_elem.get_text(strip=True) if desc_elem else ''
+                    desc_text = desc_elem.get_text(strip=True) if desc_elem else ''
                     
-                    if item.get('title'):
+                    # Видаляємо технічний текст типу "Результати: 155"
+                    if desc_text.startswith('Результати:') or desc_text.startswith('Results:'):
+                        desc_text = ''
+                    
+                    item['description'] = desc_text
+                    
+                    if item.get('title') and item.get('url'):
                         news_items.append(item)
                         
                 except Exception as e:
@@ -214,14 +210,12 @@ class NSZUParser:
         
         for i, item in enumerate(news_items[:limit], 1):
             title = item.get('title', 'Без заголовка')
-            date = item.get('date', 'Не вказано')
             url = item.get('url', '')
             desc = item.get('description', '')
             
             message += f"<b>{i}. {title}</b>\n"
-            message += f"📅 {date}\n"
             
-            if desc:
+            if desc and desc not in ['Не вказано', '']:
                 # Обмежуємо опис до 150 символів
                 short_desc = desc[:150] + '...' if len(desc) > 150 else desc
                 message += f"📝 {short_desc}\n"
@@ -333,6 +327,28 @@ class NSZUParser:
 
 # Використання
 if __name__ == "__main__":
+    # Імпорт конфігурації
+    try:
+        from config import (
+            TELEGRAM_TOKEN,
+            TELEGRAM_CHAT_ID,
+            HEADLESS_MODE,
+            MAX_NEWS_ITEMS,
+            NEWS_LIMIT_TO_SEND,
+            DATABASE_FILE,
+            CLEANUP_OLD_RECORDS_DAYS
+        )
+    except ImportError:
+        print("❌ Файл config.py не знайдено!")
+        print("📝 Створіть файл config.py на основі config.example.py")
+        print("\nПриклад:")
+        print("TELEGRAM_TOKEN = 'your_token_here'")
+        print("TELEGRAM_CHAT_ID = 'your_chat_id_here'")
+        exit(1)
+    except Exception as e:
+        print(f"❌ Помилка завантаження конфігурації: {e}")
+        exit(1)
+    
     parser = NSZUParser(
         headless=HEADLESS_MODE,
         telegram_token=TELEGRAM_TOKEN,
@@ -357,7 +373,7 @@ if __name__ == "__main__":
         print("\n" + "=" * 60)
         
         # Отримання всіх новин
-        all_news = parser.get_news_list(max_items=20)
+        all_news = parser.get_news_list(max_items=MAX_NEWS_ITEMS)
         print(f"Всього новин знайдено: {len(all_news)}")
         
         # Фільтрація нових новин
@@ -370,9 +386,11 @@ if __name__ == "__main__":
             print("📰 Нові новини:\n")
             for i, item in enumerate(new_news, 1):
                 print(f"{i}. {item.get('title', 'Без заголовка')}")
-                print(f"   📅 {item.get('date', 'Не вказано')}")
                 if item.get('url'):
                     print(f"   🔗 {item['url']}")
+                if item.get('description') and item.get('description') not in ['', 'Не вказано']:
+                    desc = item['description'][:100] + '...' if len(item['description']) > 100 else item['description']
+                    print(f"   📝 {desc}")
                 print()
             
             # Збереження у JSON
@@ -383,7 +401,7 @@ if __name__ == "__main__":
             print("=" * 60)
             print("Відправка в Telegram...")
             print("=" * 60)
-            parser.send_news_to_telegram(new_news, limit=10)
+            parser.send_news_to_telegram(new_news, limit=NEWS_LIMIT_TO_SEND)
         else:
             print("✅ Немає нових новин для відправки!")
             print("   Всі новини вже були відправлені раніше.")
